@@ -1,40 +1,11 @@
 import { getBearerToken, validateJWT } from "../auth";
 import { respondWithJSON } from "./json";
-import { getVideo, getVideos, updateVideo } from "../db/videos";
+import { getVideo, updateVideo } from "../db/videos";
 import type { ApiConfig } from "../config";
 import type { BunRequest } from "bun";
 import { BadRequestError, NotFoundError, UserForbiddenError } from "./errors";
-
-type Thumbnail = {
-  data: ArrayBuffer;
-  mediaType: string;
-};
-
-const videoThumbnails: Map<string, Thumbnail> = new Map();
-
-export async function handlerGetThumbnail(cfg: ApiConfig, req: BunRequest) {
-  const { videoId } = req.params as { videoId?: string };
-  if (!videoId) {
-    throw new BadRequestError("Invalid video ID");
-  }
-
-  const video = getVideo(cfg.db, videoId);
-  if (!video) {
-    throw new NotFoundError("Couldn't find video");
-  }
-
-  const thumbnail = videoThumbnails.get(videoId);
-  if (!thumbnail) {
-    throw new NotFoundError("Thumbnail not found");
-  }
-
-  return new Response(thumbnail.data, {
-    headers: {
-      "Content-Type": thumbnail.mediaType,
-      "Cache-Control": "no-store",
-    },
-  });
-}
+import path from "node:path";
+import { randomBytes } from "node:crypto";
 
 export async function handlerUploadThumbnail(cfg: ApiConfig, req: BunRequest) {
   const { videoId } = req.params as { videoId?: string };
@@ -51,24 +22,26 @@ export async function handlerUploadThumbnail(cfg: ApiConfig, req: BunRequest) {
   if (!(file instanceof File)) {
     throw new BadRequestError(`Error, couldn't get thumbnail from formData`)
   }
+  if (file.type !== "image/jpeg" && file.type !== "image/png") {
+    throw new BadRequestError(`Wrong file type`)
+  }
   const MAX_UPLOAD_SIZE = 10 << 20
   if (file.size > MAX_UPLOAD_SIZE) {
     throw new BadRequestError(`Error, thumbnail file is too big. Max 10MB`)
   }
-  const imageData = await file.arrayBuffer()
   const videoMetadata = getVideo(cfg.db, videoId)
+  
   if (!videoMetadata) {
     throw new NotFoundError("Couldn't find video");
   }
   if (videoMetadata.userID !== userID) {
     throw new UserForbiddenError(`Error, current user is not the video owner`)
   }
-  videoThumbnails.set(videoId, {
-    data: imageData,
-    mediaType: file.type
-  })
-  const thumbnailURL = `http://localhost:${cfg.port}/api/thumbnails/${videoId}`
-  videoMetadata.thumbnailURL = thumbnailURL
+  const imagePath = path.join(cfg.assetsRoot, randomBytes(32).toString("base64url"))
+  const finalImagePath = `${imagePath}.${file.type.split("/")[1]}`
+  Bun.write(finalImagePath, file)
+  const thumbnailDataURL = `http://localhost:${cfg.port}/${finalImagePath}`
+  videoMetadata.thumbnailURL = thumbnailDataURL
   updateVideo(cfg.db, videoMetadata)
   return respondWithJSON(200, videoMetadata);
 }
